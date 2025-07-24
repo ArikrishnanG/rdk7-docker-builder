@@ -18,6 +18,24 @@ print_error() {
     echo -e "\033[1;31m[ERROR]\033[0m $1"
 }
 
+extract_bitbake_envs() {
+    local recipe=$1
+    
+    if [ -z "$recipe" ]; then
+        echo "Error: Recipe name is required" >&2
+        return 1
+    fi
+    
+    local env=$(bitbake -e "$recipe")
+    
+    BUILD_IPK_DIR=$(echo "$env" | grep "^DEPLOY_DIR_IPK=" | cut -d'=' -f2 | tr -d '"')
+    IPK_ARCH=$(echo "$env" | grep "^SSTATE_PKGARCH=" | cut -d'=' -f2 | tr -d '"')
+    PACKAGE_ARCH=$(echo "$env" | grep "^PACKAGE_ARCH=" | cut -d'=' -f2 | tr -d '"')
+
+    OPKG_MAKE_INDEX=$(ls "$BUILDDIR"/tmp/work/x86_64-linux/opkg-utils-native/*/git/opkg-make-index 2>/dev/null | head -1)
+
+}
+
 setup_git_config() {
     if [ -z "$(git config --global user.name)" ]; then
         if [ -f /workspace/.git_user ]; then
@@ -89,11 +107,7 @@ build_oss_layer() {
     fi
     
     print_info "Setting up OSS build environment..."
-    print_info "Current directory: $(pwd)"
-    print_info "Looking for setup-environment script..."
     
-    print_info "OEROOT: $OEROOT"
-    # Check if setup-environment script exists
     if [ -f "./scripts/setup-environment" ]; then
         print_info "Found setup-environment script"
     else
@@ -105,17 +119,18 @@ build_oss_layer() {
     
     # Source the setup-environment script with the correct MACHINE
     # This script will set up the Yocto build environment and change to the build directory
+
     print_info "Sourcing setup-environment script with MACHINE=$MACHINE"
     
     # Debug: Check if repo is properly initialized
     print_info "Checking repo status..."
     if [ -d ".repo" ]; then
         print_info "Repo is initialized"
-        print_info "Repo manifest: $(cat .repo/manifest.xml | head -5)"
     else
         print_error "Repo is not initialized"
         exit 1
     fi
+
     echo "RUNNING: MACHINE=$MACHINE source ./scripts/setup-environment"
     MACHINE="$MACHINE" source ./scripts/setup-environment
     
@@ -129,16 +144,25 @@ build_oss_layer() {
     fi
     
     print_info "Building OSS layer packages..."
+
     bitbake lib32-packagegroup-oss-layer
     
+    extract_bitbake_envs lib32-packagegroup-oss-layer
+
     print_info "Creating OSS IPK feed..."
-    mkdir -p "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/"
-    rsync -av ./build-rdk-arm64/tmp/deploy/ipk/rdk-arm64-oss/ "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/"
+
+    mkdir -p ${OSS_IPK_PATH}
     
-    # Create package index
-    if [ -f "./build-rdk-arm64/tmp/work/x86_64-linux/opkg-utils-native/0.5.0-r0/git/opkg-make-index" ]; then
-        ./build-rdk-arm64/tmp/work/x86_64-linux/opkg-utils-native/0.5.0-r0/git/opkg-make-index "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/" > "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/Packages"
-        gzip -c9 "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/Packages" > "/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/Packages.gz"
+    if [ -f "$OPKG_MAKE_INDEX" ]; then
+        print_info "Creating package index... at ${BUILD_IPK_DIR}"
+        "$OPKG_MAKE_INDEX" "${BUILD_IPK_DIR}" > "${BUILD_IPK_DIR}/Packages"
+        pushd ${BUILD_IPK_DIR}
+         gzip -c9 Packages > Packages.gz
+        popd
+        echo "rsync -av ${BUILD_IPK_DIR} ${OSS_IPK_PATH}"
+        rsync -av ${BUILD_IPK_DIR}/ ${OSS_IPK_PATH}
+    else
+        print_warning "opkg-make-index not found, skipping package index creation"
     fi
     
     print_success "OSS layer build completed!"
@@ -146,7 +170,7 @@ build_oss_layer() {
 
 build_vendor_layer() {
     print_info "Building Vendor layer..."
-    
+    set -e
     # Create vendor layer directory
     VENDOR_DIR="/workspace/vendor-layer"
     mkdir -p "$VENDOR_DIR"
@@ -161,9 +185,9 @@ build_vendor_layer() {
         repo sync --no-clone-bundle --no-tags
     fi
     
-    # Configure OSS IPK feed
     print_info "Configuring OSS IPK feed..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+
+    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
     
     print_info "Setting up vendor build environment..."
     MACHINE="$MACHINE" source ./scripts/setup-environment
@@ -173,11 +197,17 @@ build_vendor_layer() {
     
     print_info "Building vendor layer packages..."
     bitbake lib32-packagegroup-vendor-layer
-    
+    extract_bitbake_envs lib32-packagegroup-vendor-layer
+
+    print_info "IPK_ARCH: $IPK_ARCH"
+    print_info "BUILD_IPK_DIR: $BUILD_IPK_DIR"
+    print_info "OPKG_MAKE_INDEX: $OPKG_MAKE_INDEX"
+
     print_info "Creating vendor IPK feed..."
-    mkdir -p "/home/rdk/community_shared/raspberrypi4-64-rdke-vendor/${MANIFEST_BRANCH}/ipk/"
-    rsync -av ./build-raspberrypi4-64-rdke/tmp/deploy/ipk/raspberrypi4-64-rdke-vendor/ "/home/rdk/community_shared/raspberrypi4-64-rdke-vendor/${MANIFEST_BRANCH}/ipk/"
-    
+    mkdir -p ${VENDOR_IPK_PATH}
+    echo "rsync -av $BUILD_IPK_DIR/$PACKAGE_ARCH  ${VENDOR_IPK_PATH}"
+    rsync -av $BUILD_IPK_DIR/${PACKAGE_ARCH}/  ${VENDOR_IPK_PATH}
+
     print_success "Vendor layer build completed!"
 }
 
@@ -189,7 +219,6 @@ build_middleware_layer() {
     mkdir -p "$MW_DIR"
     cd "$MW_DIR"
     
-    # Check if middleware layer is already set up
     if [ -d "middleware-manifest-rdke" ]; then
         print_warning "Middleware layer already exists, skipping initialization..."
     else
@@ -200,8 +229,8 @@ build_middleware_layer() {
     
     # Configure IPK feeds
     print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
     
     print_info "Setting up middleware build environment..."
     MACHINE="$MACHINE" source ./scripts/setup-environment
@@ -211,10 +240,13 @@ build_middleware_layer() {
     
     print_info "Building middleware layer packages..."
     bitbake lib32-packagegroup-middleware-layer
+    extract_bitbake_envs lib32-packagegroup-middleware-layer
     
     print_info "Creating middleware IPK feed..."
-    mkdir -p "/home/rdk/community_shared/raspberrypi4-64-rdke-middleware/${MANIFEST_BRANCH}/ipk/"
-    rsync -av ./build-raspberrypi4-64-rdke/tmp/deploy/ipk/raspberrypi4-64-rdke-middleware/ "/home/rdk/community_shared/raspberrypi4-64-rdke-middleware/${MANIFEST_BRANCH}/ipk/"
+
+    mkdir -p "$MW_IPK_PATH"
+
+    rsync -av $BUILD_IPK_DIR/$PACKAGE_ARCH/ "$MW_IPK_PATH"
     
     print_success "Middleware layer build completed!"
 }
@@ -236,24 +268,24 @@ build_application_layer() {
         repo sync --no-clone-bundle --no-tags
     fi
     
-    # Configure IPK feeds
     print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
-    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
+    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
     
     print_info "Setting up application build environment..."
     MACHINE="$MACHINE" source ./scripts/setup-environment
     
-    # Enable IPK feed deployment
     echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
     
     print_info "Building application layer packages..."
     bitbake lib32-packagegroup-application-layer
     
+    extract_bitbake_envs lib32-packagegroup-application-layer
+
     print_info "Creating application IPK feed..."
-    mkdir -p "/home/rdk/community_shared/raspberrypi4-64-rdke-application/${MANIFEST_BRANCH}/ipk/"
-    rsync -av ./build-raspberrypi4-64-rdke/tmp/deploy/ipk/raspberrypi4-64-rdke-application/ "/home/rdk/community_shared/raspberrypi4-64-rdke-application/${MANIFEST_BRANCH}/ipk/"
+    mkdir -p "$APP_IPK_PATH"
+    rsync -av "$BUILD_IPK_DIR/$PACKAGE_ARCH/" "$APP_IPK_PATH"
     
     print_success "Application layer build completed!"
 }
@@ -277,10 +309,10 @@ build_image_assembler() {
     
     # Configure all IPK feeds
     print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
-    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
-    sed -i "s|APPLICATION_IPK_SERVER_PATH = \".*\"|APPLICATION_IPK_SERVER_PATH = \"$APP_IPK_PATH\"|" rdke/application/meta-application-release/conf/machine/include/application.inc
+    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
+    sed -i "s|APPLICATION_IPK_SERVER_PATH = \".*\"|APPLICATION_IPK_SERVER_PATH = \"file:/$APP_IPK_PATH\"|" rdke/application/meta-application-release/conf/machine/include/application.inc
     
     print_info "Setting up image assembler build environment..."
     MACHINE="$MACHINE" source ./scripts/setup-environment
@@ -309,25 +341,15 @@ run_build() {
             build_oss_layer
             ;;
         "vendor")
-            build_oss_layer
             build_vendor_layer
             ;;
         "middleware")
-            build_oss_layer
-            build_vendor_layer
             build_middleware_layer
             ;;
         "application")
-            build_oss_layer
-            build_vendor_layer
-            build_middleware_layer
             build_application_layer
             ;;
         "image-assembler")
-            build_oss_layer
-            build_vendor_layer
-            build_middleware_layer
-            build_application_layer
             build_image_assembler
             ;;
         *)

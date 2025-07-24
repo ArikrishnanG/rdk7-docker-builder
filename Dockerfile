@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
     libbz2-dev libffi-dev libglib2.0-dev libldap2-dev liblzma-dev libncurses5-dev \
     libreadline-dev libsasl2-dev libsqlite3-dev libslang2-dev libssl-dev libxml2-dev \
     libxmlsec1-dev zlib1g-dev ant nnn locales \
-    cpio gawk lz4 \
+    cpio gawk lz4 rsync \
+    vim \
+    python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN locale-gen en_US.UTF-8 && update-locale LANG=en_US.UTF-8

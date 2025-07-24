@@ -67,10 +67,10 @@ export APP_DIR="/workspace/application-layer"
 export IA_DIR="/workspace/image-assembler-layer"
 
 # IPK feed paths - use container paths
-export OSS_IPK_PATH="file:/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/"
-export VENDOR_IPK_PATH="file:/home/rdk/community_shared/raspberrypi4-64-rdke-vendor/${MANIFEST_BRANCH}/ipk/"
-export MW_IPK_PATH="file:/home/rdk/community_shared/raspberrypi4-64-rdke-middleware/${MANIFEST_BRANCH}/ipk/"
-export APP_IPK_PATH="file:/home/rdk/community_shared/raspberrypi4-64-rdke-application/${MANIFEST_BRANCH}/ipk/"
+export OSS_IPK_PATH="/home/rdk/community_shared/rdk-arm64-oss/${OSS_BRANCH}/ipk/"
+export VENDOR_IPK_PATH="/home/rdk/community_shared/raspberrypi4-64-rdke-vendor/${MANIFEST_BRANCH}/ipk/"
+export MW_IPK_PATH="/home/rdk/community_shared/raspberrypi4-64-rdke-middleware/${MANIFEST_BRANCH}/ipk/"
+export APP_IPK_PATH="/home/rdk/community_shared/raspberrypi4-64-rdke-application/${MANIFEST_BRANCH}/ipk/"
 
 # Layer-specific build commands and directories
 case "\$LAYER" in

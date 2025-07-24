@@ -131,6 +131,7 @@ run() {
     local workspace="$(pwd)"
     
     docker run --rm \
+        --name "$CONTAINER_NAME" \
         --user "$user_id:$group_id" \
         -v "$workspace:/workspace" \
         -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
@@ -168,6 +169,14 @@ stop() {
     print_success "Container stopped"
 }
 
+cleanup() {
+    print_info "Received interrupt signal, cleaning up..."
+    docker stop "$CONTAINER_NAME" >/dev/null
+    exit 130
+}
+
+trap cleanup SIGINT SIGTERM
+
 case "${1:-help}" in
     build)
         build
@@ -195,4 +204,4 @@ case "${1:-help}" in
         show_usage
         exit 1
         ;;
-esac 
+esac
