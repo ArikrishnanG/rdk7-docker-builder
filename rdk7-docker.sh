@@ -7,6 +7,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+DEFAULT_TARGET="raspberrypi"
 IMAGE_NAME="rdk7-builder"
 CONTAINER_NAME="rdk7-builder"
 
@@ -26,6 +27,24 @@ print_error() {
     echo -e "\033[1;31m[ERROR]\033[0m $1"
 }
 
+get_input() {
+    local prompt="$1"
+    local default="$2"
+    local var_name="$3"
+    
+    if [ -n "$default" ]; then
+        read -p "$prompt [$default]: " input
+        if [ -z "$input" ]; then
+            input="$default"
+        fi
+    else
+        read -p "$prompt: " input
+    fi
+    
+    eval "$var_name='$input'"
+}
+
+
 
 show_usage() {
     cat << EOF
@@ -34,24 +53,21 @@ RDK-7 Docker Builder
 Usage: $0 <command>
 
 Commands:
-    build       Build the Docker image with user mapping
-    start       Start interactive development environment
-    setup       Run setup.sh to configure RDK target (outside container)
-    run         Run the RDK build process (inside container)
-    shell       Drop into a shell in the container
-    stop        Stop the container
-    help        Show this help
+    create_container  Build the Docker image with user mapping
+    setup             Run generate-rdk-build-env and configure RDK target (outside container)
+    run               Run the RDK build process (inside container)
+    shell             Drop into a shell in the container
+    help              Show this help
 
 Examples:
-    $0 build
+    $0 create_container
     $0 setup    # Configure RDK environment
-    $0 start    # Interactive development
     $0 run      # Run build process
 
 EOF
 }
 
-build() {
+create_container() {
     print_info "Building RDK-7 Docker image with user mapping..."
     
     local user_id=$(id -u)
@@ -66,55 +82,13 @@ build() {
     print_success "Docker image built: $IMAGE_NAME"
 }
 
-start() {
-    print_info "Starting RDK-7 development environment..."
-    
-    local user_id=$(id -u)
-    local group_id=$(id -g)
-    local workspace="$(pwd)"
-    
-    # Stop existing container if running
-    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    
-    docker run -it --rm \
-        --name "$CONTAINER_NAME" \
-        --user "$user_id:$group_id" \
-        -v "$workspace:/workspace" \
-        -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
-        -v "$HOME/.gitconfig:/home/rdk/.gitconfig:ro" \
-        -v "$HOME/.netrc:/home/rdk/.netrc:ro" \
-        -v "$HOME/community_shared:/home/rdk/community_shared" \
-        -e USER_ID="$user_id" \
-        -e GROUP_ID="$group_id" \
-        "$IMAGE_NAME"
-}
 
 setup() {
     print_info "Running RDK-7 setup (outside container)..."
     
-    # Check if setup.sh exists
-    if [ ! -f "setup.sh" ]; then
-        print_error "setup.sh not found in current directory"
-        exit 1
-    fi
-    
-    # Create IPK feeds directory on host
-    mkdir -p "$HOME/community_shared"
-    
-    # Run setup.sh directly (outside container)
-    print_info "Executing setup.sh..."
-    bash setup.sh
-    
-    if [ $? -eq 0 ]; then
-        print_success "Setup completed successfully!"
-        print_info "You can now run:"
-        print_info "  $0 start    # Start interactive development"
-        print_info "  $0 run      # Run the build process"
-    else
-        print_error "Setup failed"
-        exit 1
-    fi
+    get_input "Enter layer to build (oss/vendor/middleware/application/image-assembler)" "$DEFAULT_LAYER" "LAYER"
+
+    ./generate-rdk-build-env --layer $LAYER > build.env
 }
 
 run() {
@@ -162,13 +136,6 @@ shell() {
         "$IMAGE_NAME" shell
 }
 
-stop() {
-    print_info "Stopping RDK-7 container..."
-    docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    print_success "Container stopped"
-}
-
 cleanup() {
     print_info "Received interrupt signal, cleaning up..."
     docker stop "$CONTAINER_NAME" >/dev/null
@@ -178,11 +145,8 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 case "${1:-help}" in
-    build)
-        build
-        ;;
-    start)
-        start
+    create_container)
+        create_container
         ;;
     setup)
         setup
@@ -192,9 +156,6 @@ case "${1:-help}" in
         ;;
     shell)
         shell
-        ;;
-    stop)
-        stop
         ;;
     help|--help|-h)
         show_usage

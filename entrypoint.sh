@@ -1,80 +1,54 @@
 #!/bin/bash
 
-set -e
+set -e  -x
 
-print_info() {
-    echo -e "\033[1;34m[INFO]\033[0m $1"
-}
-
-print_success() {
-    echo -e "\033[1;32m[SUCCESS]\033[0m $1"
-}
-
-print_warning() {
-    echo -e "\033[1;33m[WARNING]\033[0m $1"
-}
-
-print_error() {
-    echo -e "\033[1;31m[ERROR]\033[0m $1"
-}
+# Color output functions
+print_info() { echo -e "\033[1;34m[INFO]\033[0m $1"; }
+print_success() { echo -e "\033[1;32m[SUCCESS]\033[0m $1"; }
+print_warning() { echo -e "\033[1;33m[WARNING]\033[0m $1"; }
+print_error() { echo -e "\033[1;31m[ERROR]\033[0m $1"; }
 
 extract_bitbake_envs() {
     local recipe=$1
-    
-    if [ -z "$recipe" ]; then
-        echo "Error: Recipe name is required" >&2
-        return 1
-    fi
+    [ -z "$recipe" ] && { echo "Error: Recipe name is required" >&2; return 1; }
     
     local env=$(bitbake -e "$recipe")
-    
     BUILD_IPK_DIR=$(echo "$env" | grep "^DEPLOY_DIR_IPK=" | cut -d'=' -f2 | tr -d '"')
     IPK_ARCH=$(echo "$env" | grep "^SSTATE_PKGARCH=" | cut -d'=' -f2 | tr -d '"')
     PACKAGE_ARCH=$(echo "$env" | grep "^PACKAGE_ARCH=" | cut -d'=' -f2 | tr -d '"')
-
     OPKG_MAKE_INDEX=$(ls "$BUILDDIR"/tmp/work/x86_64-linux/opkg-utils-native/*/git/opkg-make-index 2>/dev/null | head -1)
 
+    ls "$BUILDDIR"/tmp/work/x86_64-linux/opkg-utils-native/*/git/opkg-make-index
 }
 
 setup_git_config() {
-    if [ -z "$(git config --global user.name)" ]; then
-        if [ -f /workspace/.git_user ]; then
-            GIT_USER=$(cat /workspace/.git_user)
-        else
-            print_info "Setting up git configuration..."
-            read -p "Enter your git username: " GIT_USER
-            echo "$GIT_USER" > /workspace/.git_user
+    for config in "user.name:.git_user" "user.email:.git_email"; do
+        IFS=':' read -r git_key file_name <<< "$config"
+        if [ -z "$(git config --global $git_key)" ]; then
+            if [ -f "/workspace/$file_name" ]; then
+                value=$(cat "/workspace/$file_name")
+            else
+                read -p "Enter your git ${git_key#user.}: " value
+                echo "$value" > "/workspace/$file_name"
+            fi
+            git config --global $git_key "$value"
         fi
-        git config --global user.name "$GIT_USER"
-    fi
-
-    if [ -z "$(git config --global user.email)" ]; then
-        if [ -f /workspace/.git_email ]; then
-            GIT_EMAIL=$(cat /workspace/.git_email)
-        else
-            read -p "Enter your git email: " GIT_EMAIL
-            echo "$GIT_EMAIL" > /workspace/.git_email
-        fi
-        git config --global user.email "$GIT_EMAIL"
-    fi
+    done
 }
 
 setup_credentials() {
     if [ ! -f /workspace/.netrc ] && [ ! -f ~/.netrc ]; then
         print_info "Setting up RDK credentials..."
-        print_info "You can skip this if you don't need RDK Central access"
-        read -p "Do you want to setup RDK Central credentials? (y/N): " -n 1 -r
+        read -p "Setup RDK Central credentials? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             read -p "Enter your RDK Central email: " RDK_EMAIL
             read -s -p "Enter your RDK Central PAT: " RDK_PAT
             echo
-            
             cat > /workspace/.netrc << EOF
 machine code.rdkcentral.com
     login $RDK_EMAIL
     password $RDK_PAT
-
 machine github.com
     login $RDK_EMAIL
     password $RDK_PAT
@@ -84,273 +58,151 @@ EOF
             print_success "Credentials saved to /workspace/.netrc"
         fi
     elif [ -f /workspace/.netrc ] && [ ! -f ~/.netrc ]; then
-        cp /workspace/.netrc ~/.netrc
-        chmod 600 ~/.netrc
+        cp /workspace/.netrc ~/.netrc && chmod 600 ~/.netrc
     fi
 }
 
-build_oss_layer() {
-    print_info "Building OSS layer..."
+build_layer() {
+    local layer_name=$1
+    local layer_prefix=${1//-/_}
+    layer_prefix=${layer_prefix^^}
+
+    echo "Building layer: ${layer_name}"
+    local manifest_url_var="${layer_prefix}_MANIFEST_URL"
+    local manifest_file_var="${layer_prefix}_MANIFEST_FILE"
+    local ipk_path_var="${layer_prefix}_IPK_PATH"
+    local package_name="lib32-packagegroup-${layer_name}-layer"
     
-    # Create OSS layer directory
-    OSS_DIR="/workspace/oss-layer"
-    mkdir -p "$OSS_DIR"
-    cd "$OSS_DIR"
+    # Handle special cases
+    case "$layer_name" in
+        "oss")
+            local branch_var="OSS_BRANCH"
+            local manifest_dir="rdke-oss-manifest"
+            ;;
+        "vendor")
+            local branch_var="MANIFEST_BRANCH"
+            local manifest_dir="vendor-manifest-raspberrypi"
+            ;;
+        "image-assembler")
+            local branch_var="MANIFEST_BRANCH"
+            local manifest_dir="image-assembler-manifest-rdke"
+            local package_name="lib32-rdk-fullstack-image"
+            ;;
+        *)
+            local branch_var="MANIFEST_BRANCH"
+            local manifest_dir="${layer_name}-manifest-rdke"
+            ;;
+    esac
     
-    # Check if OSS layer is already set up
-    if [ -d "rdke-oss-manifest" ]; then
-        print_warning "OSS layer already exists, skipping initialization..."
+    print_info "Building $layer_name layer..."
+    
+    # Setup directory
+    local layer_dir="/workspace/${layer_name}-layer"
+    mkdir -p "$layer_dir" && cd "$layer_dir"
+    
+    if [ ! -d "$manifest_dir" ]; then
+        print_info "Initializing $layer_name manifest..."
+        repo init -u "${!manifest_url_var}" -b "refs/tags/${!branch_var}" -m "${!manifest_file_var}"
+        repo sync --no-clone-bundle --no-tags -j8
     else
-        print_info "Initializing OSS manifest..."
-        repo init -u "$OSS_MANIFEST_URL" -b "refs/tags/$OSS_BRANCH" -m "$OSS_MANIFEST_FILE"
-        repo sync --no-clone-bundle --no-tags
+        print_warning "$layer_name layer already exists, skipping initialization..."
     fi
     
-    print_info "Setting up OSS build environment..."
+    configure_ipk_feeds "$layer_name"
     
-    if [ -f "./scripts/setup-environment" ]; then
-        print_info "Found setup-environment script"
+    print_info "Setting up $layer_name build environment..."
+    MACHINE="$MACHINE" source ./scripts/setup-environment $BUILD_DIR
+    echo "BUILDDIR=" $BUILDDIR
+    [ "$layer_name" != "oss" ] && echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
+    
+    print_info "Building $layer_name packages..."
+    bitbake "$package_name"
+    
+    if [ "$layer_name" != "image-assembler" ]; then
+        extract_bitbake_envs "$package_name"
+        create_ipk_feed "$layer_name"
     else
-        print_error "setup-environment script not found in ./scripts/"
-        print_info "Available files in current directory:"
-        ls -la
-        exit 1
+        print_info "Final image will be in your IA build output."
     fi
     
-    # Source the setup-environment script with the correct MACHINE
-    # This script will set up the Yocto build environment and change to the build directory
-
-    print_info "Sourcing setup-environment script with MACHINE=$MACHINE"
-    
-    # Debug: Check if repo is properly initialized
-    print_info "Checking repo status..."
-    if [ -d ".repo" ]; then
-        print_info "Repo is initialized"
-    else
-        print_error "Repo is not initialized"
-        exit 1
-    fi
-
-    echo "RUNNING: MACHINE=$MACHINE source ./scripts/setup-environment"
-    MACHINE="$MACHINE" source ./scripts/setup-environment
-    
-    print_info "Checking if bitbake is available..."
-    if command -v bitbake >/dev/null 2>&1; then
-        print_info "bitbake command found"
-    else
-        print_error "bitbake command not found after sourcing environment"
-        print_info "PATH: $PATH"
-        exit 1
-    fi
-    
-    print_info "Building OSS layer packages..."
-
-    bitbake lib32-packagegroup-oss-layer
-    
-    extract_bitbake_envs lib32-packagegroup-oss-layer
-
-    print_info "Creating OSS IPK feed..."
-
-    mkdir -p ${OSS_IPK_PATH}
-    
-    if [ -f "$OPKG_MAKE_INDEX" ]; then
-        print_info "Creating package index... at ${BUILD_IPK_DIR}"
-        "$OPKG_MAKE_INDEX" "${BUILD_IPK_DIR}" > "${BUILD_IPK_DIR}/Packages"
-        pushd ${BUILD_IPK_DIR}
-         gzip -c9 Packages > Packages.gz
-        popd
-        echo "rsync -av ${BUILD_IPK_DIR} ${OSS_IPK_PATH}"
-        rsync -av ${BUILD_IPK_DIR}/ ${OSS_IPK_PATH}
-    else
-        print_warning "opkg-make-index not found, skipping package index creation"
-    fi
-    
-    print_success "OSS layer build completed!"
+    print_success "$layer_name layer build completed!"
 }
 
-build_vendor_layer() {
-    print_info "Building Vendor layer..."
-    set -e
-    # Create vendor layer directory
-    VENDOR_DIR="/workspace/vendor-layer"
-    mkdir -p "$VENDOR_DIR"
-    cd "$VENDOR_DIR"
-    
-    # Check if vendor layer is already set up
-    if [ -d "vendor-manifest-raspberrypi" ]; then
-        print_warning "Vendor layer already exists, skipping initialization..."
-    else
-        print_info "Initializing vendor manifest..."
-        repo init -u "$VENDOR_MANIFEST_URL" -b "refs/tags/$MANIFEST_BRANCH" -m "$VENDOR_MANIFEST_FILE"
-        repo sync --no-clone-bundle --no-tags
-    fi
-    
-    print_info "Configuring OSS IPK feed..."
+# TODO: this needs to be simplified the IPK paths should be set using site.conf
 
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    
-    print_info "Setting up vendor build environment..."
-    MACHINE="$MACHINE" source ./scripts/setup-environment
-    
-    # Enable IPK feed deployment
-    echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
-    
-    print_info "Building vendor layer packages..."
-    bitbake lib32-packagegroup-vendor-layer
-    extract_bitbake_envs lib32-packagegroup-vendor-layer
-
-    print_info "IPK_ARCH: $IPK_ARCH"
-    print_info "BUILD_IPK_DIR: $BUILD_IPK_DIR"
-    print_info "OPKG_MAKE_INDEX: $OPKG_MAKE_INDEX"
-
-    print_info "Creating vendor IPK feed..."
-    mkdir -p ${VENDOR_IPK_PATH}
-    echo "rsync -av $BUILD_IPK_DIR/$PACKAGE_ARCH  ${VENDOR_IPK_PATH}"
-    rsync -av $BUILD_IPK_DIR/${PACKAGE_ARCH}/  ${VENDOR_IPK_PATH}
-
-    print_success "Vendor layer build completed!"
+configure_ipk_feeds() {
+    local layer=$1
+    case "$layer" in
+        "oss") 
+            ;;  # No dependencies
+        "vendor")
+            sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" \
+                rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+            ;;
+        "middleware")
+            sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" \
+                rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+            sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" \
+                rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+            ;;
+        "application")
+            sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" \
+                rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+            sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" \
+                rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+            sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MIDDLEWARE_IPK_PATH\"|" \
+                rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
+            ;;
+        "image-assembler")
+            sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" \
+                rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
+            sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" \
+                rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
+            sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MIDDLEWARE_IPK_PATH\"|" \
+                rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
+            sed -i "s|APPLICATION_IPK_SERVER_PATH = \".*\"|APPLICATION_IPK_SERVER_PATH = \"file:/$APPLICATION_IPK_PATH\"|" \
+                rdke/application/meta-application-release/conf/machine/include/application.inc
+            ;;
+    esac
 }
 
-build_middleware_layer() {
-    print_info "Building Middleware layer..."
+create_ipk_feed() {
+    local layer=$1
+    local ipk_path_var="${layer^^}_IPK_PATH"
+    local ipk_path="${!ipk_path_var}"
     
-    # Create middleware layer directory
-    MW_DIR="/workspace/middleware-layer"
-    mkdir -p "$MW_DIR"
-    cd "$MW_DIR"
+    print_info "Creating $layer IPK feed..."
+    mkdir -p "$ipk_path"
     
-    if [ -d "middleware-manifest-rdke" ]; then
-        print_warning "Middleware layer already exists, skipping initialization..."
+    if [ "$layer" = "oss" ]; then
+        # OSS layer has special handling
+        if [ -f "$OPKG_MAKE_INDEX" ]; then
+            print_info "Creating package index at $BUILD_IPK_DIR"
+            "$OPKG_MAKE_INDEX" "$BUILD_IPK_DIR" > "$BUILD_IPK_DIR/Packages"
+            (cd "$BUILD_IPK_DIR" && gzip -c9 Packages > Packages.gz)
+            rsync -av "$BUILD_IPK_DIR/" "$ipk_path"
+        else
+            print_warning "opkg-make-index not found, skipping package index creation"
+        fi
     else
-        print_info "Initializing middleware manifest..."
-        repo init -u "$MW_MANIFEST_URL" -b "refs/tags/$MANIFEST_BRANCH" -m "$MW_MANIFEST_FILE"
-        repo sync --no-clone-bundle --no-tags
+        # Other layers
+        rsync -av "$BUILD_IPK_DIR/$PACKAGE_ARCH/" "$ipk_path"
     fi
-    
-    # Configure IPK feeds
-    print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
-    
-    print_info "Setting up middleware build environment..."
-    MACHINE="$MACHINE" source ./scripts/setup-environment
-    
-    # Enable IPK feed deployment
-    echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
-    
-    print_info "Building middleware layer packages..."
-    bitbake lib32-packagegroup-middleware-layer
-    extract_bitbake_envs lib32-packagegroup-middleware-layer
-    
-    print_info "Creating middleware IPK feed..."
-
-    mkdir -p "$MW_IPK_PATH"
-
-    rsync -av $BUILD_IPK_DIR/$PACKAGE_ARCH/ "$MW_IPK_PATH"
-    
-    print_success "Middleware layer build completed!"
-}
-
-build_application_layer() {
-    print_info "Building Application layer..."
-    
-    # Create application layer directory
-    APP_DIR="/workspace/application-layer"
-    mkdir -p "$APP_DIR"
-    cd "$APP_DIR"
-    
-    # Check if application layer is already set up
-    if [ -d "application-manifest-rdke" ]; then
-        print_warning "Application layer already exists, skipping initialization..."
-    else
-        print_info "Initializing application manifest..."
-        repo init -u "$APP_MANIFEST_URL" -b "refs/tags/$MANIFEST_BRANCH" -m "$APP_MANIFEST_FILE"
-        repo sync --no-clone-bundle --no-tags
-    fi
-    
-    print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
-    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
-    
-    print_info "Setting up application build environment..."
-    MACHINE="$MACHINE" source ./scripts/setup-environment
-    
-    echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
-    
-    print_info "Building application layer packages..."
-    bitbake lib32-packagegroup-application-layer
-    
-    extract_bitbake_envs lib32-packagegroup-application-layer
-
-    print_info "Creating application IPK feed..."
-    mkdir -p "$APP_IPK_PATH"
-    rsync -av "$BUILD_IPK_DIR/$PACKAGE_ARCH/" "$APP_IPK_PATH"
-    
-    print_success "Application layer build completed!"
-}
-
-build_image_assembler() {
-    print_info "Building Image Assembler..."
-    
-    # Create image assembler directory
-    IA_DIR="/workspace/image-assembler-layer"
-    mkdir -p "$IA_DIR"
-    cd "$IA_DIR"
-    
-    # Check if image assembler is already set up
-    if [ -d "image-assembler-manifest-rdke" ]; then
-        print_warning "Image assembler already exists, skipping initialization..."
-    else
-        print_info "Initializing image assembler manifest..."
-        repo init -u "$IA_MANIFEST_URL" -b "refs/tags/$MANIFEST_BRANCH" -m "$IA_MANIFEST_FILE"
-        repo sync --no-clone-bundle --no-tags
-    fi
-    
-    # Configure all IPK feeds
-    print_info "Configuring IPK feeds..."
-    sed -i "s|OSS_IPK_SERVER_PATH = \".*\"|OSS_IPK_SERVER_PATH = \"file:/$OSS_IPK_PATH\"|" rdke/common/meta-oss-reference-release/conf/machine/include/oss.inc
-    sed -i "s|VENDOR_IPK_SERVER_PATH = \".*\"|VENDOR_IPK_SERVER_PATH = \"file:/$VENDOR_IPK_PATH\"|" rdke/vendor/meta-vendor-release/conf/machine/include/vendor.inc
-    sed -i "s|MW_IPK_SERVER_PATH = \".*\"|MW_IPK_SERVER_PATH = \"file:/$MW_IPK_PATH\"|" rdke/middleware/meta-middleware-release/conf/machine/include/middleware.inc
-    sed -i "s|APPLICATION_IPK_SERVER_PATH = \".*\"|APPLICATION_IPK_SERVER_PATH = \"file:/$APP_IPK_PATH\"|" rdke/application/meta-application-release/conf/machine/include/application.inc
-    
-    print_info "Setting up image assembler build environment..."
-    MACHINE="$MACHINE" source ./scripts/setup-environment
-    
-    print_info "Building full stack image..."
-    bitbake lib32-rdk-fullstack-image
-    
-    print_success "Image assembler build completed!"
-    print_info "Final image will be in: ./build-raspberrypi4-64-rdke/tmp/deploy/images/raspberrypi4-64-rdke/"
 }
 
 run_build() {
-    if [ ! -f /workspace/build.env ]; then
-        print_error "No build.env found. Please run setup.sh outside the container first"
+    [ ! -f /workspace/build.env ] && {
+        print_error "No build.env found. Please run setup first"
         exit 1
-    fi
+    }
     
     print_info "Sourcing build environment..."
     source /workspace/build.env
-    
     print_info "Building RDK-7 for layer: $LAYER"
     
-    # Build layers based on selection
     case "$LAYER" in
-        "oss")
-            build_oss_layer
-            ;;
-        "vendor")
-            build_vendor_layer
-            ;;
-        "middleware")
-            build_middleware_layer
-            ;;
-        "application")
-            build_application_layer
-            ;;
-        "image-assembler")
-            build_image_assembler
+        "oss"|"vendor"|"middleware"|"application"|"image-assembler")
+            build_layer "$LAYER"
             ;;
         *)
             print_error "Unsupported layer: $LAYER"
@@ -366,41 +218,25 @@ main() {
     print_info "Workspace: /workspace"
     print_info "User: $(whoami) (UID: $(id -u), GID: $(id -g))"
     
-    # Check if we have arguments (unsupervised mode)
     if [ $# -gt 0 ]; then
         print_info "Running in unsupervised mode"
-        
         case "$1" in
-            "build")
-                run_build
-                ;;
-            "shell")
-                exec /bin/bash
-                ;;
-            *)
-                print_info "Executing command: $@"
-                exec "$@"
-                ;;
+            "build") run_build ;;
+            "shell") exec /bin/bash ;;
+            *) print_info "Executing command: $@"; exec "$@" ;;
         esac
     else
-        # Interactive mode
         print_info "Running in interactive mode"
-        
-        # Setup git and credentials if needed
         setup_git_config
         setup_credentials
         
-        # Check if build.env exists
         if [ -f /workspace/build.env ]; then
-            print_info "Build environment found. You can source it with:"
-            print_info "  source build.env"
-            print_info "Or run the build with:"
-            print_info "  ./entrypoint.sh build"
+            print_info "Build environment found. You can source it with: source build.env"
+            print_info "Or run the build with: ./entrypoint.sh build"
         else
-            print_warning "No build.env found. Please run setup.sh outside the container first"
+            print_warning "No build.env found. Please run setup first"
         fi
         
-        # Drop into shell
         print_info "Starting interactive shell..."
         print_info "Available commands:"
         print_info "  source build.env - Source the build environment (if available)"

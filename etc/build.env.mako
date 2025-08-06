@@ -31,14 +31,12 @@ export BUILD_COMMAND="${layers[target_layer]['build-command']}"
 export BUILD_DIR="build-$MACHINE"
 export WORK_DIR="$${env_prefix[target_layer]}_DIR"
 
-export BUILDDIR="$WORK_DIR/$BUILD_DIR"
-
 <%
     from urllib.parse import urlparse
     from pathlib import Path
 %>
 # Manifest URLs and files
-% for layer in layers.values():
+% for layer_name, layer in layers.items():
 <%
     url = urlparse(layer['manifest'])
     path = Path(url.path)

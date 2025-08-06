@@ -36,9 +36,6 @@ RUN mkdir -p /workspace && chown $USERNAME:$USERNAME /workspace
 RUN python3.8 -m pip install --upgrade pip setuptools wheel
 RUN python3.8 -m pip install pyyaml requests jinja2 markupsafe
 
-COPY setup.sh /usr/local/bin/setup.sh
-RUN chmod +x /usr/local/bin/setup.sh
-
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

@@ -6,10 +6,21 @@ Build environment setup is written to stdout.
 """
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+
+class Colors:
+    """ANSI color codes for terminal output."""
+
+    BLUE: str = "\033[1;34m"
+    GREEN: str = "\033[1;32m"
+    YELLOW: str = "\033[1;33m"
+    RED: str = "\033[1;31m"
+    RESET: str = "\033[0m"
 
 
 class Log:
@@ -69,20 +80,10 @@ except ImportError:
 ENV_PREFIX = {
     "oss": "OSS",
     "vendor": "VENDOR",
-    "middleware": "MW",
-    "application": "APP",
-    "image-assembler": "IA",
+    "middleware": "MIDDLEWARE",
+    "application": "APPLICATION",
+    "image-assembler": "IMAGE_ASSEMBLER",
 }
-
-
-class Colors:
-    """ANSI color codes for terminal output."""
-
-    BLUE: str = "\033[1;34m"
-    GREEN: str = "\033[1;32m"
-    YELLOW: str = "\033[1;33m"
-    RED: str = "\033[1;31m"
-    RESET: str = "\033[0m"
 
 
 class RDKSetupError(Exception):
@@ -176,6 +177,14 @@ def main() -> None:
         Log.info(f"Generating build environment for {args.layer}")
         config = load_config(Path(args.config), Path(args.schema))
         Log.success(f"Configuration loaded from {args.config}")
+
+        # Create shared directory
+        # This must be done before the container is ever started
+        shared_directory =  config['build']['shared-dir']
+        dir_path = os.path.expandvars(shared_directory)
+        os.makedirs(dir_path, exist_ok=True)
+
+        # Render the template
         template = Template(filename=args.template)
         build_env = template.render(
             timestamp=datetime.now(timezone.utc),
