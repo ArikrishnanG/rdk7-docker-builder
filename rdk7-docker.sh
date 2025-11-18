@@ -74,6 +74,7 @@ Commands:
     setup             Run generate-rdk-build-env and configure RDK target (outside container)
     run               Run the RDK build process (inside container)
     run dependency    Generate dependency graph instead of building (inside container)
+    sync              Sync the configured layer without building (inside container)
     shell             Drop into a shell in the container
     help              Show this help
 
@@ -191,12 +192,17 @@ setup() {
     print_success "Setup completed for $LAYER layer"
 }
 
-run() {
-    print_disclaimer
-    print_info "Running RDK-7 build (inside container)..."
+# Generic docker run function to eliminate code duplication
+docker_run_command() {
+    local command="$1"
+    local description="$2"
+    local interactive="${3:-false}"
     
-    # Check if build.env exists
-    if [ ! -f "build.env" ]; then
+    [ "$interactive" = "false" ] && print_disclaimer
+    print_info "$description"
+    
+    # Check if build.env exists (except for shell command)
+    if [ "$command" != "shell" ] && [ ! -f "build.env" ]; then
         print_error "build.env not found. Please run '$0 setup' first"
         exit 1
     fi
@@ -205,9 +211,10 @@ run() {
     local group_id=$(id -g)
     local workspace="$(pwd)"
     
-    docker run --rm \
-        --name "$CONTAINER_NAME" \
-        --user "$user_id:$group_id" \
+    local docker_opts="--rm --name $CONTAINER_NAME --user $user_id:$group_id"
+    [ "$interactive" = "true" ] && docker_opts="-it --rm --user $user_id:$group_id"
+    
+    docker run $docker_opts \
         -v "$workspace:/workspace" \
         -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
         -v "$HOME/.gitconfig:/home/rdk/.gitconfig:ro" \
@@ -215,52 +222,23 @@ run() {
         -v "$HOME/community_shared:/home/rdk/community_shared" \
         -e USER_ID="$user_id" \
         -e GROUP_ID="$group_id" \
-        "$IMAGE_NAME" build
+        "$IMAGE_NAME" "$command"
+}
+
+run() {
+    docker_run_command "build" "Running RDK-7 build (inside container)..."
 }
 
 run_dependency() {
-    print_info "Running RDK-7 dependency graph generation (inside container)..."
-    
-    # Check if build.env exists
-    if [ ! -f "build.env" ]; then
-        print_error "build.env not found. Please run '$0 setup' first"
-        exit 1
-    fi
-    
-    local user_id=$(id -u)
-    local group_id=$(id -g)
-    local workspace="$(pwd)"
-    
-    docker run --rm \
-        --name "$CONTAINER_NAME" \
-        --user "$user_id:$group_id" \
-        -v "$workspace:/workspace" \
-        -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
-        -v "$HOME/.gitconfig:/home/rdk/.gitconfig:ro" \
-        -v "$HOME/.netrc:/home/rdk/.netrc:ro" \
-        -v "$HOME/community_shared:/home/rdk/community_shared" \
-        -e USER_ID="$user_id" \
-        -e GROUP_ID="$group_id" \
-        "$IMAGE_NAME" dependency
+    docker_run_command "dependency" "Running RDK-7 dependency graph generation (inside container)..."
+}
+
+sync() {
+    docker_run_command "sync" "Running RDK-7 layer sync (inside container)..."
 }
 
 shell() {
-    print_info "Starting shell in RDK-7 container..."
-    
-    local user_id=$(id -u)
-    local group_id=$(id -g)
-    local workspace="$(pwd)"
-    
-    docker run -it --rm \
-        --user "$user_id:$group_id" \
-        -v "$workspace:/workspace" \
-        -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
-        -v "$HOME/.gitconfig:/home/rdk/.gitconfig:ro" \
-        -v "$HOME/.netrc:/home/rdk/.netrc:ro" \
-        -v "$HOME/community_shared:/home/rdk/community_shared" \
-        -e USER_ID="$user_id" \
-        -e GROUP_ID="$group_id" \
-        "$IMAGE_NAME" shell
+    docker_run_command "shell" "Starting shell in RDK-7 container..." "true"
 }
 
 cleanup() {
@@ -314,6 +292,9 @@ case "$COMMAND" in
         else
             run
         fi
+        ;;
+    sync)
+        sync
         ;;
     shell)
         shell

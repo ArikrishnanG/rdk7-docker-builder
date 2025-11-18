@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e  -x
+set -e 
 
 # Color output functions
 print_info() { echo -e "\033[1;34m[INFO]\033[0m $1"; }
@@ -62,42 +62,44 @@ EOF
     fi
 }
 
-build_layer() {
+# Get layer configuration details
+get_layer_config() {
     local layer_name=$1
     local layer_prefix=${1//-/_}
     layer_prefix=${layer_prefix^^}
 
-    echo "Building layer: ${layer_name}"
-    local manifest_url_var="${layer_prefix}_MANIFEST_URL"
-    local manifest_file_var="${layer_prefix}_MANIFEST_FILE"
-    local ipk_path_var="${layer_prefix}_IPK_PATH"
-    local package_name="lib32-packagegroup-${layer_name}-layer"
+    manifest_url_var="${layer_prefix}_MANIFEST_URL"
+    manifest_file_var="${layer_prefix}_MANIFEST_FILE"
+    ipk_path_var="${layer_prefix}_IPK_PATH"
+    package_name="lib32-packagegroup-${layer_name}-layer"
     
     # Handle special cases
     case "$layer_name" in
         "oss")
-            local branch_var="OSS_BRANCH"
-            local manifest_dir="rdke-oss-manifest"
+            branch_var="OSS_BRANCH"
+            manifest_dir="rdke-oss-manifest"
             ;;
         "vendor")
-            local branch_var="MANIFEST_BRANCH"
-            local manifest_dir="vendor-manifest-raspberrypi"
+            branch_var="MANIFEST_BRANCH"
+            manifest_dir="vendor-manifest-raspberrypi"
             ;;
         "image-assembler")
-            local branch_var="MANIFEST_BRANCH"
-            local manifest_dir="image-assembler-manifest-rdke"
-            local package_name="lib32-rdk-fullstack-image"
+            branch_var="MANIFEST_BRANCH"
+            manifest_dir="image-assembler-manifest-rdke"
+            package_name="lib32-rdk-fullstack-image"
             ;;
         *)
-            local branch_var="MANIFEST_BRANCH"
-            local manifest_dir="${layer_name}-manifest-rdke"
+            branch_var="MANIFEST_BRANCH"
+            manifest_dir="${layer_name}-manifest-rdke"
             ;;
     esac
-    
-    print_info "Building $layer_name layer..."
-    
-    # Setup directory
+}
+
+# Initialize or sync layer repository
+init_or_sync_layer() {
+    local layer_name=$1
     local layer_dir="/workspace/${layer_name}-layer"
+    
     mkdir -p "$layer_dir" && cd "$layer_dir"
     
     if [ ! -d "$manifest_dir" ]; then
@@ -105,9 +107,25 @@ build_layer() {
         repo init -u "${!manifest_url_var}" -b "refs/tags/${!branch_var}" -m "${!manifest_file_var}"
         repo sync --no-clone-bundle --no-tags -j8
     else
-        print_warning "$layer_name layer already exists, skipping initialization..."
+        print_info "Syncing existing $layer_name layer repositories..."
+        cd "$manifest_dir"
+        repo sync --no-clone-bundle --no-tags -j8
     fi
+}
+
+build_layer() {
+    local layer_name=$1
     
+    # Get layer configuration
+    get_layer_config "$layer_name"
+    
+    echo "Building layer: ${layer_name}"
+    print_info "Building $layer_name layer..."
+    
+    # Initialize or sync repositories
+    init_or_sync_layer "$layer_name"
+    
+    # Configure and build
     configure_ipk_feeds "$layer_name"
     
     print_info "Setting up $layer_name build environment..."
@@ -220,6 +238,21 @@ create_ipk_feed() {
     fi
 }
 
+sync_layer() {
+    local layer_name=$1
+    
+    # Get layer configuration
+    get_layer_config "$layer_name"
+    
+    echo "Syncing layer: ${layer_name}"
+    print_info "Syncing $layer_name layer..."
+    
+    # Initialize or sync repositories
+    init_or_sync_layer "$layer_name"
+    
+    print_success "$layer_name layer sync completed!"
+}
+
 generate_dependency_graph() {
     local layer_name=$1
     local layer_prefix=${1//-/_}
@@ -275,6 +308,27 @@ run_dependency() {
     esac
 }
 
+run_sync() {
+    [ ! -f /workspace/build.env ] && {
+        print_error "No build.env found. Please run setup first"
+        exit 1
+    }
+    
+    print_info "Sourcing build environment..."
+    source /workspace/build.env
+    print_info "Syncing RDK-7 for layer: $LAYER"
+    
+    case "$LAYER" in
+        "oss"|"vendor"|"middleware"|"application"|"image-assembler")
+            sync_layer "$LAYER"
+            ;;
+        *)
+            print_error "Unsupported layer: $LAYER"
+            exit 1
+            ;;
+    esac
+}
+
 run_build() {
     [ ! -f /workspace/build.env ] && {
         print_error "No build.env found. Please run setup first"
@@ -308,6 +362,7 @@ main() {
         case "$1" in
             "build") run_build ;;
             "dependency") run_dependency ;;
+            "sync") run_sync ;;
             "shell") exec /bin/bash ;;
             *) print_info "Executing command: $@"; exec "$@" ;;
         esac

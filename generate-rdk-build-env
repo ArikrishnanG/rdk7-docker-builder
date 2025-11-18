@@ -168,7 +168,7 @@ Dependencies:
     parser.add_argument(
         "--layer-repos",
         "-R",
-        help="Set repository type for each layer (format: oss:remote,vendor:local,...)",
+        help="Set package repository type for each layer (format: oss:remote,vendor:local,...)",
         default="",
     )
 
@@ -210,7 +210,7 @@ def main() -> None:
                 if layer_name not in config['layers']:
                     config['layers'][layer_name] = {}
                 config['layers'][layer_name]['repository-type'] = layer_repos[layer_name]
-                Log.info(f"Setting {layer_name} repository type to: {layer_repos[layer_name]}")
+                Log.info(f"Setting {layer_name} pacakge source repository type to: {layer_repos[layer_name]}")
             else:
                 # Set default if not specified
                 if 'repository-type' not in config['layers'][layer_name]:
