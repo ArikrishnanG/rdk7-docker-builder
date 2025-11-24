@@ -27,15 +27,15 @@ layers:
     manifest: "https://github.com/rdkcentral/rdke-oss-manifest/rdk-arm.xml"
   
   vendor:
-    build-command: "bitbake lib32-packagegroup-vendor-layer"
+    build-command: "bitbake lib32-vendor-test-image"
     manifest: "https://github.com/rdkcentral/vendor-manifest-raspberrypi/rdke-raspberrypi.xml"
   
   middleware:
-    build-command: "bitbake lib32-packagegroup-middleware-layer"
+    build-command: "bitbake lib32-middleware-test-image"
     manifest: "https://github.com/rdkcentral/middleware-manifest-rdke/raspberrypi4-64.xml"
   
   application:
-    build-command: "bitbake lib32-packagegroup-application-layer"
+    build-command: "bitbake lib32-application-test-image"
     manifest: "https://github.com/rdkcentral/application-manifest-rdke/raspberrypi4-64.xml"
   
   image-assembler:

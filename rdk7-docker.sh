@@ -139,7 +139,19 @@ check_local_ipk_available() {
 setup() {
     print_disclaimer
     print_info "Running RDK-7 setup (outside container)..."
-    
+   
+    # Ensure Mako is installed
+    if python3 -c "import mako" 2>/dev/null; then
+       print_info "Mako is already installed."
+    else
+        print_info "Mako not found. Installing..."
+        pip3 install mako || {
+            print_error "Failed to install Mako."
+            exit 1
+        }
+        export PATH="$PATH:$HOME/.local/bin"
+    fi
+ 
     # Get layer if not provided via CLI
     if [ -z "$LAYER" ]; then
         if [ "$HEADLESS" = "true" ]; then
@@ -193,27 +205,42 @@ setup() {
 }
 
 # Generic docker run function to eliminate code duplication
+
 docker_run_command() {
     local command="$1"
     local description="$2"
     local interactive="${3:-false}"
-    
+
     [ "$interactive" = "false" ] && print_disclaimer
     print_info "$description"
-    
+
     # Check if build.env exists (except for shell command)
     if [ "$command" != "shell" ] && [ ! -f "build.env" ]; then
         print_error "build.env not found. Please run '$0 setup' first"
         exit 1
     fi
-    
-    local user_id=$(id -u)
-    local group_id=$(id -g)
-    local workspace="$(pwd)"
-    
-    local docker_opts="--rm --name $CONTAINER_NAME --user $user_id:$group_id"
-    [ "$interactive" = "true" ] && docker_opts="-it --rm --user $user_id:$group_id"
-    
+
+    # Ensure image name
+    IMAGE_NAME="${IMAGE_NAME:-rdk7-docker-builder:latest}"
+    if [ -z "$IMAGE_NAME" ]; then
+        print_error "IMAGE_NAME is not set. Export IMAGE_NAME or set a default."
+        exit 1
+    fi
+
+    # Provide a safe default container name (or remove --name entirely)
+    CONTAINER_NAME="${CONTAINER_NAME:-rdk7-builder}"
+
+    local user_id group_id workspace docker_opts
+    user_id="$(id -u)"
+    group_id="$(id -g)"
+    workspace="$(pwd)"
+
+    if [ "$interactive" = "true" ]; then
+        docker_opts="-it --rm --name $CONTAINER_NAME --user $user_id:$group_id"
+    else
+        docker_opts="--rm --name $CONTAINER_NAME --user $user_id:$group_id"
+    fi
+
     docker run $docker_opts \
         -v "$workspace:/workspace" \
         -v "$HOME/.ssh:/home/rdk/.ssh:ro" \
@@ -222,6 +249,11 @@ docker_run_command() {
         -v "$HOME/community_shared:/home/rdk/community_shared" \
         -e USER_ID="$user_id" \
         -e GROUP_ID="$group_id" \
+        -e REVISION_MODE="${REVISION_MODE:-tag}" \
+        -e MANIFEST_BRANCH="${MANIFEST_BRANCH:-}" \
+        -e OSS_BRANCH="${OSS_BRANCH:-}" \
+        -e MANIFEST_FILE="${MANIFEST_FILE:-}" \
+        -e LAYER="${LAYER:-}" \
         "$IMAGE_NAME" "$command"
 }
 

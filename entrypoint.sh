@@ -68,25 +68,38 @@ get_layer_config() {
     local layer_prefix=${1//-/_}
     layer_prefix=${layer_prefix^^}
 
+
     manifest_url_var="${layer_prefix}_MANIFEST_URL"
     manifest_file_var="${layer_prefix}_MANIFEST_FILE"
     ipk_path_var="${layer_prefix}_IPK_PATH"
+
     package_name="lib32-packagegroup-${layer_name}-layer"
-    
-    # Handle special cases
+    image_name="lib32-${layer_name}-test-image"
+
+    # Layer-specific defaults and branch variable mapping
     case "$layer_name" in
         "oss")
-            branch_var="OSS_BRANCH"
+            branch_var="OSS_BRANCH"                   
             manifest_dir="rdke-oss-manifest"
+            image_name="core-image-minimal"
             ;;
         "vendor")
-            branch_var="MANIFEST_BRANCH"
+            branch_var="MANIFEST_BRANCH"               
             manifest_dir="vendor-manifest-raspberrypi"
+            ;;
+        "middleware")
+            branch_var="MANIFEST_BRANCH"
+            manifest_dir="middleware-manifest-rdke"
+            ;;
+        "application")
+            branch_var="MANIFEST_BRANCH"
+            manifest_dir="application-manifest-rdke"
             ;;
         "image-assembler")
             branch_var="MANIFEST_BRANCH"
             manifest_dir="image-assembler-manifest-rdke"
-            package_name="lib32-rdk-fullstack-image"
+            package_name=
+            image_name="lib32-rdk-fullstack-image"
             ;;
         *)
             branch_var="MANIFEST_BRANCH"
@@ -96,55 +109,174 @@ get_layer_config() {
 }
 
 # Initialize or sync layer repository
+
 init_or_sync_layer() {
-    local layer_name=$1
+
+    local layer_name="${1:?layer_name is required}"
+
+    # Load per-layer config (must set branch_var, manifest_dir, manifest_url_var, manifest_file_var, etc.)
+    get_layer_config "$layer_name"
+
     local layer_dir="/workspace/${layer_name}-layer"
-    
     mkdir -p "$layer_dir" && cd "$layer_dir"
-    
-    if [ ! -d "$manifest_dir" ]; then
-        print_info "Initializing $layer_name manifest..."
-        repo init -u "${!manifest_url_var}" -b "refs/tags/${!branch_var}" -m "${!manifest_file_var}"
-        repo sync --no-clone-bundle --no-tags -j8
+
+    # --- Validate required variables provided by get_layer_config() ---
+    if [ -z "${branch_var:-}" ] || [ -z "${manifest_url_var:-}" ] || [ -z "${manifest_file_var:-}" ]; then
+        echo "[ERROR] branch_var/manifest_url_var/manifest_file_var not set by get_layer_config()" >&2
+        exit 1
+    fi
+    if [ -z "${!branch_var:-}" ]; then
+        echo "[ERROR] ${branch_var} is empty. For '${layer_name}', export OSS_BRANCH (oss) or MANIFEST_BRANCH (others)." >&2
+        exit 1
+    fi
+    if [ -z "${!manifest_url_var:-}" ]; then
+        echo "[ERROR] ${manifest_url_var} is empty. Ensure your environment/build.env provides per-layer manifest URLs." >&2
+        exit 1
+    fi
+
+    # --- Resolve manifest file ---
+    local manifest_file=""
+    if [ -n "${MANIFEST_FILE:-}" ]; then
+        manifest_file="${MANIFEST_FILE}"
+    elif [ -n "${!manifest_file_var:-}" ]; then
+        manifest_file="${!manifest_file_var}"
     else
-        print_info "Syncing existing $layer_name layer repositories..."
-        cd "$manifest_dir"
-        repo sync --no-clone-bundle --no-tags -j8
+        echo "[ERROR] No manifest file resolved for layer '${layer_name}'. Tried: MANIFEST_FILE and ${manifest_file_var}." >&2
+        exit 1
+    fi
+
+    # validate manifest file exists
+    if [[ -f "$manifest_file" ]]; then
+        : # ok, local file
+    else
+        if [[ "$manifest_file" == */* ]] && [[ ! -f "$manifest_file" ]]; then
+            echo "[WARN] Manifest '$manifest_file' not found locally; assuming repo manifest name." >&2
+        fi
+    fi
+
+    # --- Compute revision (tag or branch) ---
+    local REVISION_MODE_LOCAL="${REVISION_MODE:-tag}"
+    local revision=""
+    case "${REVISION_MODE_LOCAL}" in
+        tag)    revision="refs/tags/${!branch_var}" ;;
+        branch) revision="${!branch_var}" ;;
+        *)      echo "[ERROR] REVISION_MODE must be 'tag' or 'branch' (got: '${REVISION_MODE_LOCAL}')." >&2; exit 1 ;;
+    esac
+
+    # --- Determine init vs sync ---
+    local repo_dir="$layer_dir/.repo"
+    local existing_dir=""
+    if [ -d "$repo_dir" ]; then
+        existing_dir="$repo_dir"
+    elif [ -n "${manifest_dir:-}" ] && [ -d "${manifest_dir}" ]; then
+        existing_dir="${manifest_dir}"
+    fi
+
+    # --- Layer Config Logging ---
+    echo "[INFO] Layer: ${layer_name}"
+    echo "  REVISION_MODE=${REVISION_MODE_LOCAL}"
+    echo "  branch_var=${branch_var} → ${!branch_var}"
+    echo "  manifest_url_var=${manifest_url_var} → ${!manifest_url_var}"
+    echo "  manifest_file_var=${manifest_file_var} → ${!manifest_file_var:-<unset>}"
+    echo "  MANIFEST_FILE (override)=${MANIFEST_FILE:-<unset>}"
+    echo "  manifest_file (effective)=${manifest_file}"
+    echo "  manifest_dir (configured)=${manifest_dir:-<unset>}"
+    echo "  using existing_dir=${existing_dir:-<none>}"
+    echo "  revision=${revision}"
+
+    # --- Ensure 'repo' tool is available ---
+    if ! command -v repo >/dev/null 2>&1; then
+        echo "[ERROR] 'repo' tool not found in PATH. Ensure the container image installs Android repo." >&2
+        exit 1
+    fi
+
+    # --- Init or Sync ---
+    if [ -z "$existing_dir" ]; then
+        echo "[INFO] Initializing ${layer_name} manifest..."
+        # Use -b "${revision}" with 'repo init' (supports branches and refs/tags/..)
+        repo init -u "${!manifest_url_var}" -b "${revision}" -m "${manifest_file}" || {
+            echo "[ERROR] repo init failed" >&2; exit 1;
+        }
+        repo sync --no-clone-bundle --no-tags -j"$(nproc 2>/dev/null || echo 8)" || {
+            echo "[ERROR] repo sync failed" >&2; exit 1;
+        }
+    else
+        echo "[INFO] Syncing existing ${layer_name} repositories..."
+        cd "$existing_dir" || { echo "[ERROR] Cannot cd to $existing_dir" >&2; exit 1; }
+        repo sync --no-clone-bundle --no-tags -j"$(nproc 2>/dev/null || echo 8)" || {
+            echo "[ERROR] repo sync failed" >&2; exit 1;
+        }
     fi
 }
 
+
 build_layer() {
-    local layer_name=$1
-    
+    local layer_name="$1"
+
     # Get layer configuration
     get_layer_config "$layer_name"
-    
+
     echo "Building layer: ${layer_name}"
     print_info "Building $layer_name layer..."
-    
+
     # Initialize or sync repositories
     init_or_sync_layer "$layer_name"
-    
+
+    # Return to the layer workdir before sourcing env
+    local layer_dir="/workspace/${layer_name}-layer"
+    cd "$layer_dir" || { print_error "Cannot cd to $layer_dir"; exit 1; }
+
     # Configure and build
     configure_ipk_feeds "$layer_name"
-    
+
     print_info "Setting up $layer_name build environment..."
-    MACHINE="$MACHINE" source ./scripts/setup-environment $BUILD_DIR
-    echo "BUILDDIR=" $BUILDDIR
-    [ "$layer_name" != "oss" ] && echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
-    
+    MACHINE="$MACHINE" source ./scripts/setup-environment "$BUILD_DIR"
+    echo "BUILDDIR=$BUILDDIR"
+
+    # Add DEPLOY_IPK_FEED for non-OSS layers
+    if [ "$layer_name" != "oss" ]; then
+        echo 'DEPLOY_IPK_FEED = "1"' >> conf/local.conf
+    fi
+
     print_info "Building $layer_name packages..."
-    bitbake "$package_name"
-    
+
+    local package_build_status=0
+
+    if [ -z "$package_name" ]; then
+        print_error "No package name provided for layer: $layer_name"
+        package_build_status=1
+    else
+        print_info "Building $layer_name packages..."
+        bitbake "$package_name"
+        package_build_status=$?
+    fi
+
+    # Handle package build result
+    if [ "$package_build_status" -ne 0 ]; then
+        print_error "Package build failed or package name was empty — continuing to image build."
+    else
+        print_success "Package build succeeded."
+    fi
+
+    # To build complete image
+    print_info "Building image: $image_name..."
+    bitbake "$image_name"
+    if [ $? -ne 0 ]; then
+        print_error "Image build failed for layer: $layer_name"
+    else
+        print_success "Image build succeeded for layer: $layer_name"
+    fi
+
     if [ "$layer_name" != "image-assembler" ]; then
         extract_bitbake_envs "$package_name"
         create_ipk_feed "$layer_name"
     else
         print_info "Final image will be in your IA build output."
     fi
-    
+
     print_success "$layer_name layer build completed!"
 }
+
 
 # TODO: this needs to be simplified the IPK paths should be set using site.conf
 
@@ -258,12 +390,15 @@ generate_dependency_graph() {
     local layer_prefix=${1//-/_}
     layer_prefix=${layer_prefix^^}
 
-    local package_name="lib32-packagegroup-${layer_name}-layer"
+    local image_name="lib32-${layer_name}-test-image"
     
     # Handle special cases
     case "$layer_name" in
+	          "oss")
+              image_name="core-image-minimal"
+              ;;
         "image-assembler")
-            local package_name="lib32-rdk-fullstack-image"
+            local image_name="lib32-rdk-fullstack-image"
             ;;
     esac
     
@@ -276,8 +411,8 @@ generate_dependency_graph() {
     print_info "Setting up $layer_name build environment..."
     MACHINE="$MACHINE" source ./scripts/setup-environment $BUILD_DIR
     
-    print_info "Generating dependency graph for $package_name..."
-    bitbake -g "$package_name"
+    print_info "Generating dependency graph for $image_name..."
+    bitbake -g "$image_name"
     
     print_info "Creating reduced depdency graph"
     oe-depends-dot -r task-depends.dot

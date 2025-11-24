@@ -1,11 +1,33 @@
 # RDK-7 Build Environment Configuration
 # Generated on ${timestamp.isoformat()}
 
+<%
+    import os
+
+    # Mode (env-first)
+    revision_mode_env = os.environ.get('REVISION_MODE', build.get('revision_mode', 'tag'))
+
+    # Target/LAYER (env-first)
+    target_env = os.environ.get('TARGET', build['target'])
+    layer_env  = os.environ.get('LAYER', target_layer)
+
+    # Branches (env-first)
+    manifest_branch_env = os.environ.get('MANIFEST_BRANCH', build['branch']['manifest'])
+    oss_branch_env      = os.environ.get('OSS_BRANCH', build['branch']['oss'])
+
+    # Manifest files (env-first; defaults from your config)
+    manifest_file_env              = os.environ.get('MANIFEST_FILE', build.get('manifest_file', 'default.xml'))
+%>
+
 # Target configuration
-export TARGET="${build['target']}"
-export LAYER="${target_layer}"
-export MANIFEST_BRANCH="${build['branch']['manifest']}"
-export OSS_BRANCH="${build['branch']['oss']}"
+export TARGET="${target_env}"
+export LAYER="${layer_env}"
+
+# Mode, Branches and Manifest
+export REVISION_MODE="${revision_mode_env}"
+export MANIFEST_BRANCH="${manifest_branch_env}"
+export OSS_BRANCH="${oss_branch_env}"
+export MANIFEST_FILE="${manifest_file_env}"
 
 # Layer directories (uses container paths)
 % for layer_name, layer in layers.items():
