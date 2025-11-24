@@ -120,12 +120,18 @@ check_local_ipk_available() {
     local shared_dir=$(grep "shared-dir:" config.yaml | awk -F': ' '{print $2}' | tr -d '"' | envsubst)
     
     case "$layer" in
-        "oss")
-            ipk_path="$shared_dir/rdk-arm64-oss/4.6.2-community/ipk"
-            ;;
-        "vendor"|"middleware"|"application")
-            ipk_path="$shared_dir/raspberrypi4-64-rdke-${layer}/RDK7-1.0.0/ipk"
-            ;;
+    "oss")
+        ipk_path="$shared_dir/rdk-arm64-oss/${OSS_IPK_VERSION}/ipk"
+        ;;
+    "vendor")
+        ipk_path="$shared_dir/raspberrypi4-64-rdke-vendor/${VENDOR_IPK_VERSION}/ipk"
+        ;;
+    "middleware")
+        ipk_path="$shared_dir/raspberrypi4-64-rdke-middleware/${MIDDLEWARE_IPK_VERSION}/ipk"
+        ;;
+    "application")
+        ipk_path="$shared_dir/raspberrypi4-64-rdke-application/${APPLICATION_IPK_VERSION}/ipk"
+        ;;
     esac
     
     if [ -d "$ipk_path" ] && [ "$(ls -A $ipk_path 2>/dev/null)" ]; then

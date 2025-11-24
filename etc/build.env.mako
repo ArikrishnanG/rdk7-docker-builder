@@ -17,6 +17,13 @@
 
     # Manifest files (env-first; defaults from your config)
     manifest_file_env              = os.environ.get('MANIFEST_FILE', build.get('manifest_file', 'default.xml'))
+    
+    # To configure IPK path
+    oss_ipk_env = os.environ.get('OSS_IPK_VERSION', build['branch']['oss'])
+    vendor_ipk_env = os.environ.get('VENDOR_IPK_VERSION', build['branch']['manifest'])
+    middleware_ipk_env = os.environ.get('MIDDLEWARE_IPK_VERSION', build['branch']['manifest'])
+    application_ipk_env = os.environ.get('APPLICATION_IPK_VERSION', build['branch']['manifest'])
+
 %>
 
 # Target configuration
@@ -29,6 +36,12 @@ export MANIFEST_BRANCH="${manifest_branch_env}"
 export OSS_BRANCH="${oss_branch_env}"
 export MANIFEST_FILE="${manifest_file_env}"
 
+#IPK Path
+export OSS_IPK_VERSION="${oss_ipk_env}"
+export VENDOR_IPK_VERSION="${vendor_ipk_env}"
+export MIDDLEWARE_IPK_VERSION="${middleware_ipk_env}"
+export APPLICATION_IPK_VERSION="${application_ipk_env}"
+
 # Layer directories (uses container paths)
 % for layer_name, layer in layers.items():
 export ${env_prefix[layer_name]}_DIR="${build['workspace-dir']}/${layer_name}-layer"
@@ -37,9 +50,13 @@ export ${env_prefix[layer_name]}_DIR="${build['workspace-dir']}/${layer_name}-la
 # IPK feed paths (uses container paths)
 % for layer_name, layer in layers.items():
 % if layer_name == 'oss':
-export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['arch']}-${layer_name}/${build['branch']['oss']}/ipk"
-% elif layer_name != 'image-assembler':
-export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['model']}-${layer_name}/${build['branch']['manifest']}/ipk"
+export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['arch']}-${layer_name}/${oss_ipk_env}/ipk"
+% elif layer_name == 'vendor':
+export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['model']}-${layer_name}/${vendor_ipk_env}/ipk"
+% elif layer_name == 'middleware':
+export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['model']}-${layer_name}/${middleware_ipk_env}/ipk"
+% elif layer_name == 'application':
+export ${env_prefix[layer_name]}_IPK_PATH="${build['shared-dir']}/${build['machine']['model']}-${layer_name}/${application_ipk_env}/ipk"
 % endif
 % endfor
 
