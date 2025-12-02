@@ -1,3 +1,6 @@
+# Copyright 2025 RDK Management
+# SPDX-License-Identifier: Apache-2.0
+#
 # RDK-7 Build Environment Configuration
 # Generated on ${timestamp.isoformat()}
 

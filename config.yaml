@@ -1,5 +1,7 @@
-# RDK-7 Build Configuration
+# Copyright 2025 RDK Management
+# SPDX-License-Identifier: Apache-2.0
 
+# RDK-7 Build Configuration
 # Build settings
 build:
   target: "raspberrypi"

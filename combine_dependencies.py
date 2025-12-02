@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2025 RDK Management
+# SPDX-License-Identifier: Apache-2.0
 
 import re
 import sys

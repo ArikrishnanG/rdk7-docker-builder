@@ -1,3 +1,6 @@
+# Copyright 2025 RDK Management
+# SPDX-License-Identifier: Apache-2.0
+
 FROM ubuntu:20.04
 
 ENV DEBIAN_FRONTEND=noninteractive
